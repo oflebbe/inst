@@ -1,0 +1,175 @@
+#!/bin/bash
+
+management=`getent hosts management | awk '{print $3}'`
+machines="node1 node2 node3"
+REPO="$PWD/repo"
+
+usage() {
+	cat << EOF
+$0 [-m] [-s] [-p <managementnode>] [<node1> [<node2> ...]]
+
+	-m	assume bootstrap from master instead of external bootstrap
+		machine
+	-p	override name of management node
+	-n	show summary of what would be done but don't do it
+EOF
+	exit 1
+}
+
+externalbootstrap=1
+dryrun=0
+while getopts "hmnp:" OPT ; do
+        case "$OPT" in
+                m)
+			externalbootstrap=0
+			management="$HOSTNAME"
+			;;
+                n) dryrun=1 ;;
+		p) management="$OPTARG" ;;
+                *)
+                        usage
+                        ;;
+        esac
+done
+
+# skip over options already processed by getopts
+for i in `seq 2 $OPTIND` ; do shift ; done
+
+# possibly override list of machines with rest of command line arguments
+[ -z "$1" ] || machines="$@"
+
+if [ "$dryrun" == "1" ] ; then
+	echo "Would bootstrap the following nodes: $machines"
+	echo "assuming that this machine ($HOSTNAME) is"
+	if [ "$externalbootstrap" == "1" ] ; then
+		echo "an external bootstrapping system."
+	else
+		echo "already the management node of the cluster ($management)."
+	fi
+
+	exit 0
+fi
+
+# we use pssh to do things in parallel on all nodes and netcat to check if SSH
+# is up
+apt-get -y install pssh netcat
+
+die() {
+	echo "failed"
+	exit 1
+}
+donext() {
+	echo done.
+	echo "$1 ..."
+}
+
+if ! echo " $machines " | grep " $management " >/dev/null ; then
+	echo
+	echo "ERROR: management machine $management is not in list of "
+	echo "nodes to install ($machines) which does not make sense."
+	die
+fi
+
+echo "Say hi ..."
+for i in $machines; do
+	# system has (possibly) been thrown away and (re-)created and thus
+	# changed it's SSH host keys - remove and re-add them from/to known_hosts
+        donext "Cleaning ssh keys of $i"
+	ssh-keygen -R $i || die
+	ssh-keygen -R `getent hosts $i | awk '{print $1}'` || die
+done
+echo done.
+
+for i in $machines; do
+        echo -n "Waiting for $i to come up"
+	while ! netcat -z -w 1 $i 22 ; do sleep 1  ; echo -n . ; done
+	echo " up!"
+done
+
+# FIXME: This is sensitive because it establishes trust between our machine and
+# the nodes.
+parallel-ssh -O StrictHostKeyChecking=no -t 0 -l root -H "$machines" -iP \
+	"echo SSH on \$HOSTNAME up"
+
+donext "Copying install_puppet script to machines"
+parallel-scp -l root -H "$machines" \
+	"${REPO}"/install_puppet /tmp/install_puppet \
+	|| die
+donext "Making install_puppet executable and cleaning existing puppet"
+parallel-ssh -t 0 -l root -H "$machines" -iP \
+	"chmod 755 /tmp/install_puppet && rm -rf /var/lib/puppet/*" \
+	|| die
+
+if [ "$externalbootstrap" == "1" ] ; then
+	donext "Copying puppet manifests to master"
+	# no wget inside the container yet, as puppet agent will install it later
+	tar -c "$REPO"/../.. | \
+		ssh -C root@$management "mkdir -p /etc/puppet && \
+			tar -x --no-same-owner -C /etc/puppet" \
+		|| die
+
+fi
+
+donext "Installing the puppet master"
+ssh root@$management /tmp/install_puppet master || die
+
+cat <<EOF
+
+----------------------------------------------
+Install puppet agents and request certificate:
+EOF
+parallel-scp -t 0 -l root -H "$machines" \
+	"$REPO"/../../modules/inst/files/puppet-3.7.2-pkinit-8.patch \
+	"$REPO"/../../hieradata/node/*.yaml /tmp || die
+parallel-ssh -t 0 -l root -H "$machines" -iP \
+	'/tmp/install_puppet agent 2>&1 | sed -e "s,^,$HOSTNAME: ,"' || die
+
+cat <<EOF
+
+----------------------------
+Sign certificates on master:
+EOF
+for i in $machines; do
+	# agent on management node automatically signs its own certificate
+	[ x"$i" != x"$management" ] || continue
+
+	# first start of puppet agent on client automatically puts in a certificate
+	# request at the master. Sign that request so that the agent can retrieve
+	# its cert at its next start and successfully connect to the master.
+	# FIXME: This obviously is security sensitive. Here we can do it
+	# automatically because it's happening in a extremely tight time-frame and
+	# inside a testing environment. In production this should be done manually
+	# and include a check of the key fingerprint.
+	fqdn=`getent hosts $i | awk '{print $2}'`
+	hieranode=$REPO/../../hieradata/node/${fqdn}.yaml
+	allowpar=--allow-dns-alt-names
+	grep kerberos::client $hieranode >/dev/null && \
+		allowpar="$allowpar --allow-pkinit-client"
+	grep kerberos::server $hieranode >/dev/null && \
+		allowpar="$allowpar --allow-pkinit-kdc"
+	ssh root@$management puppet cert sign $allowpar $fqdn
+done
+
+# now finally activate our site.pp
+cat <<EOF
+
+--------------------------
+Activate site.pp on master
+EOF
+ssh root@$management /tmp/install_puppet prime-master || die
+
+# Use pssh to finalise the node configuration. We have to do it in parallel
+# because the services on the nodes interdepend on each other and all agents
+# need to run concurrently to get everything set up in a single pass.
+cat <<EOF
+
+--------------------
+Bootstrapping nodes:
+EOF
+parallel-ssh -t 0 -l root -H "$machines" -iP \
+	'/tmp/install_puppet bootstrap 2>&1 | sed -e "s,^,$HOSTNAME: ,"' || die
+
+cat <<EOF
+
+All finished. Happy hadooping!
+EOF

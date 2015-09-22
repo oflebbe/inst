@@ -1,0 +1,13 @@
+---
+classes:
+  - inst::profile::hadoop::node::hivenode
+  - hadoop_hive::server
+
+system::files:
+  /etc/logrotate.d/hive-logrotate:
+    ensure: 'present'
+    owner: 'root'
+    group: 'root'
+    mode: '0644'
+    source: 'puppet:///modules/inst/hive-logrotate'
+

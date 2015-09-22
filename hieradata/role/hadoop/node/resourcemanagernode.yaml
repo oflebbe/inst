@@ -1,0 +1,4 @@
+---
+classes:
+  - inst::profile::hadoop::node::resourcemanagernode
+  - hadoop::resourcemanager

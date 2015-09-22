@@ -1,0 +1,5 @@
+---
+classes:
+  - inst::profile::ntp::client
+
+ntp::servers: [ '192.168.100.21 iburst' ]

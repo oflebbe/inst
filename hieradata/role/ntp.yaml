@@ -1,0 +1,4 @@
+---
+classes:
+  - inst::profile::ntp
+  - ntp

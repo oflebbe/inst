@@ -1,0 +1,44 @@
+#!/bin/sh
+
+SLAPD_CONF=/etc/ldap/slapd.conf
+BASE="dc=bigtop,dc=org"
+
+grep "^syncrepl" $SLAPD_CONF > /dev/null
+if [ $? = 0 ]; then
+    LDAP_ROLE=consumer
+else
+    LDAP_ROLE=provider
+fi
+
+case $LDAP_ROLE in
+    "provider")
+	ldapsearch -Y EXTERNAL -QLLLH ldapi:/// -b ou=people,$BASE -s base 2>&1
+	if [ $? = 0 ]; then
+	    echo "LDAP already initialized, nothing to do ..."
+	    exit 0
+	fi
+	/usr/sbin/service slapd stop
+	/bin/rm -vf /var/lib/ldap.inst/*
+	/usr/sbin/slapadd -f $SLAPD_CONF <<EOF
+dn: dc=bigtop,dc=org
+objectClass: domain
+dc: inst
+
+dn: ou=people,dc=bigtop,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=bigtop,dc=org
+objectClass: organizationalUnit
+ou: groups
+
+EOF
+	chown openldap:openldap /var/lib/ldap.inst/*
+	/usr/sbin/service slapd start
+	;;
+    "consumer")
+	/usr/sbin/service slapd stop
+	/bin/rm -vf /var/lib/ldap.inst/*
+	/usr/sbin/service slapd start
+esac
+

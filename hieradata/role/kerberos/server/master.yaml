@@ -1,0 +1,4 @@
+---
+classes:
+  - inst::profile::kerberos::server::master
+  - kerberos::kdc::master

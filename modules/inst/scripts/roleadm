@@ -1,0 +1,262 @@
+#!/bin/bash
+
+me=$(realpath "$0")
+modulebase=$(dirname $(dirname "$me"))
+puppetbase=$(dirname $(dirname "$modulebase"))
+
+hierayaml="$puppetbase"/hiera.yaml
+hieradata="$puppetbase"/hieradata
+hieraroles="$hieradata"/role
+
+manifests="$modulebase"/manifests
+roles="$manifests"/role
+profiles="$manifests"/profile
+
+usage() {
+	cat << EOF
+$0 [-n] [<-s | -a | -d> <role>] [-c]
+
+	-c	check defined roles for consistency
+	-s	show role
+	-a	add role
+	-d	delete role
+EOF
+	exit 1
+}
+
+mode=show
+while getopts "acds" OPT ; do
+        case "$OPT" in
+                a) mode=add ;;
+		c) mode=check ;;
+                d) mode=del ;;
+		s) mode=show ;;
+                *) usage ;;
+        esac
+done
+
+# skip over options already processed by getopts
+for i in `seq 2 $OPTIND` ; do shift ; done
+
+set_role_paths() {
+	srp_rolerelpath="$1"
+	srp_role="$2"
+
+	rolefile="$roles"/"$srp_rolerelpath".pp
+	profile="$profiles"/"$srp_rolerelpath".pp
+	hierarolefile="$hieraroles"/"$srp_rolerelpath".yaml
+	hierarolevar="inst::role::$srp_role::hierapath"
+}
+
+set_role_paths_from_role_name() {
+	srpfrn_role="$1"
+	rolerelpath=$(echo "$srpfrn_role" | sed -e "s,::,/,g")
+	set_role_paths "$rolerelpath" "$srpfrn_role"
+}
+
+set_role_paths_from_rel_path() {
+	srpfrp_rolerelpath="$1"
+	role=$(echo "$srpfrp_rolerelpath" | sed -e "s,/,::,g")
+	set_role_paths "$srpfrp_rolerelpath" "$role"
+}
+
+case "$mode" in
+	add|del|show)
+		[ -n "$1" ] || usage
+		role="$1"
+		;;
+	*)
+		[ -z "$1" ] || usage
+		;;
+esac
+
+case "$mode" in
+	show)
+		set_role_paths_from_role_name "$role"
+
+		echo "hiera path ($hierayaml):"
+		grep -2 "{::inst::role::$role::hierapath}" "$hierayaml"
+		echo
+		echo "rolefile $rolefile:"
+		cat "$rolefile"
+		echo
+		echo "profile $profile:"
+		cat "$profile"
+		echo
+		echo "hiera settings file $hierarolefile:"
+		cat "$hierarolefile"
+		;;
+
+	add)
+		while [ -n "$role" ] ; do
+			set_role_paths_from_role_name "$role"
+			roledir=$(dirname "$rolefile")
+			profiledir=$(dirname "$profile")
+			hieraroledir=$(dirname "$hierarolefile")
+
+			# stop moving upwards as soon as we find an existing
+			# role
+			grep "{::$hierarolevar}" "$hierayaml" >/dev/null && \
+				echo "Role $role already exists" && \
+				break
+
+			mkdir -p "$roledir"
+			if [ -f "$rolefile" ] ; then
+				echo "Role definition file $rolefile already exists - leaving it alone"
+			else
+				echo "Adding new role definition file $rolefile..."
+				cat <<EOF > "$rolefile"
+# == Class: inst::role::$role
+class inst::role::$role { roledef() }
+EOF
+			fi
+
+			mkdir -p "$profiledir"
+			if [ -f "$profile" ] ; then
+				echo "Profile manifest $profile already exists - leaving it alone"
+			else
+				echo "Adding new profile manifest $rolefile..."
+				cat <<EOF > "$profile"
+# == Class: inst::profile::$role
+class inst::profile::$role {
+}
+EOF
+			fi
+
+			mkdir -p "$hieraroledir"
+			if [ -f "$hierarolefile" ] ; then
+				echo "Hiera settings file $hierarolefile already exists - leaving it alone"
+			else
+				echo "Adding new hiera settings file $hierarolefile..."
+				cat <<EOF > "$hierarolefile"
+---
+classes:
+  - inst::profile::$role
+EOF
+			fi
+
+			# augeas can't do YAML :-((((
+			# https://www.redhat.com/archives/augeas-devel/2012-December/msg00048.html
+			insert="$insert\\
+  - \"%{::$hierarolevar}\""
+
+			# remove last component from role name or
+			# replace the final role component with nothing
+			# to make string empty
+			role=$(echo "$role" | \
+				sed -e "s,^[^:]\\+$,," \
+					-e "s,::[^:]\\+$,,")
+		done
+
+		if [ -n "$insert" ] ; then
+			echo "Inserting new search paths into $hierayaml..."
+			marker="^  - \"%{::inst::role${role:+::}$role::hierapath}\"\$"
+			sed -i "/$marker/ i$insert" "$hierayaml"
+		fi
+		;;
+
+	del)
+		set_role_paths_from_role_name "$role"
+		roledir=$(dirname "$rolefile")
+		profiledir=$(dirname "$profile")
+		hieraroledir=$(dirname "$hierarolefile")
+
+		if grep "{::inst::role::$role::[^:]\\+::hierapath}" "$hierayaml" >/dev/null ; then
+			echo "Child roles still exist:"
+			grep "{::inst::role::$role::[^:]\\+::hierapath}" "$hierayaml" | \
+				cut -d{ -f 2 | cut -d} -f1 | \
+				grep -v "^::inst::role::hierapath$" | \
+				sed -e "s,^::inst::role::,," \
+					-e "s,::hierapath$,,"
+		        echo "Refusing to delete role $role."
+			exit 1
+		fi
+
+		if [ -f "$rolefile" ] ; then
+			echo "Removing role definition $rolefile..."
+			rm -f "$rolefile"
+			rmdir "$roledir" 2>/dev/null
+		else
+			echo "WARNING: $role: role definition file $rolefile missing"
+		fi
+
+		if [ -f "$profile" ] ; then
+			echo "Removing profile manifest $profile..."
+			rm -f "$profile"
+			rmdir "$profiledir" 2>/dev/null
+		else
+			echo "WARNING: $role: profile manifest $profile missing"
+		fi
+
+		if [ -f "$hierarolefile" ] ; then
+			echo "Removing hiera settings file $hierarolefile..."
+			rm -f "$hierarolefile"
+			rmdir "$hieraroledir" 2>/dev/null
+		else
+			echo "WARNING: $role: hieradata $hierarolefile missing"
+		fi
+
+		echo "Removing search path from $hierayaml..."
+		sed -i -e "/  - \"%{$hierarolevar}\"/d" "$hierayaml"
+		;;
+
+	check)
+		echo "Checking roles defined in hiera.yaml..."
+		for role in $(grep "::inst::role::" "$hierayaml" | \
+			cut -d{ -f 2 | cut -d} -f1 | \
+			grep -v "^::inst::role::hierapath$" | \
+			sed -e "s,^::inst::role::,," \
+				-e "s,::hierapath$,,") ; do
+
+			set_role_paths_from_role_name "$role"
+			[ -f "$rolefile" ] || \
+				echo "WARNING: $role: role definition file $rolefile missing"
+			[ -f "$profile" ] || \
+				echo "WARNING: $role: profile manifest $profile missing"
+			[ -f "$hierarolefile" ] || \
+				echo "WARNING: $role: hieradata $hierarolefile missing"
+		done
+
+		echo "Checking role definition files..."
+		for rolerelpath in $(find "$roles" -type f | \
+			sed -e "s,^$roles/,," \
+				-e "s,\.pp$,,") ; do
+
+			set_role_paths_from_rel_path "$rolerelpath"
+			[ -f "$profile" ] || \
+				echo "WARNING: $rolefile: profile manifest $profile missing"
+			grep "{::$hierarolevar}" "$hierayaml" >/dev/null || \
+				echo "WARNING: $rolefile: hiera role path $hierarolevar missing from $hierayaml"
+			[ -f "$hierarolefile" ] || \
+				echo "WARNING: $rolefile: hieradata $hierarole missing"
+		done
+
+		echo "Checking profile definition files..."
+		for rolerelpath in $(find "$profiles" -type f | \
+			sed -e "s,^$profiles/,," \
+				-e "s,\.pp$,,") ; do
+
+			set_role_paths_from_rel_path "$rolerelpath"
+			[ -f "$rolefile" ] || \
+				echo "WARNING: $role: role definition file $rolefile missing"
+			grep "{::$hierarolevar}" "$hierayaml" >/dev/null || \
+				echo "WARNING: $rolefile: hiera role path $hierarolevar missing from $hierayaml"
+			[ -f "$hierarolefile" ] || \
+				echo "WARNING: $rolefile: hieradata $hierarole missing"
+		done
+
+		echo "Checking hieradata role settings files..."
+		for rolerelpath in $(find "$hieraroles" -type f | \
+			sed -e "s,^$hieraroles/,," \
+				-e "s,\.yaml$,,") ; do
+
+			set_role_paths_from_rel_path "$rolerelpath"
+			[ -f "$rolefile" ] || \
+				echo "WARNING: $role: role definition file $rolefile missing"
+			[ -f "$profile" ] || \
+				echo "WARNING: $rolefile: profile manifest $profile missing"
+			grep "{::$hierarolevar}" "$hierayaml" >/dev/null || \
+				echo "WARNING: $rolefile: hiera role path $hierarolevar missing from $hierayaml"
+		done
+		;;
+esac

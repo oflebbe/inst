@@ -1,0 +1,7 @@
+#!/bin/sh
+virsh net-destroy hadoop
+virsh net-undefine hadoop
+virsh net-define hadoop-net.xml
+virsh net-autostart hadoop
+virsh net-start hadoop
+

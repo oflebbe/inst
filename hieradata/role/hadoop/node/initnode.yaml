@@ -1,0 +1,6 @@
+---
+classes:
+  - inst::profile::hadoop::node::initnode
+
+system::packages:
+  python-snakebite: {}

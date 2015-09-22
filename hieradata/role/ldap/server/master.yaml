@@ -1,0 +1,10 @@
+---
+classes:
+  - inst::profile::ldap::server::master
+  #- ldap_entries
+
+ldap::server::overlays: [ 'syncprov', 'memberof', 'refint' ]
+ldap::server::modules: [ 'syncprov', 'memberof', 'refint' ]
+
+system::packages:
+  ldap-utils: {}

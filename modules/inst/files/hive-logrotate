@@ -1,0 +1,12 @@
+/var/log/inst/*.log {
+        daily
+        compress
+        delaycompress
+        rotate 2
+        maxage 90
+        dateext
+        dateformat .%Y-%m-%d
+        notifempty
+        missingok
+        sharedscripts
+}

@@ -1,0 +1,21 @@
+---
+inst::roles:
+  - inst::role::hadoop::zookeeper::client
+  - inst::role::hadoop::zookeeper::server
+  - inst::role::hadoop::node::journalnode
+  - inst::role::hadoop::node::namenode
+  - inst::role::hadoop::node::datanode
+  - inst::role::hadoop::node::resourcemanagernode
+  - inst::role::hadoop::node::hivenode
+  - inst::role::hadoop::frontend
+  - inst::role::ntp::client
+  - inst::role::ldap::server::slave
+  - inst::role::ldap::client
+  - inst::role::kerberos::client
+  - inst::role::kerberos::server::slave
+  - inst::role::sssd
+  - inst::role::saslauthd
+
+hadoop_zookeeper::server::myid: "1"
+
+ldap::server::sync_rid: '124'

@@ -1,0 +1,3 @@
+---
+classes:
+  - inst::profile::hadoop::zookeeper

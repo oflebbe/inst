@@ -1,0 +1,44 @@
+# Having section libdefaults in kdc.conf isn't normally done. But doing so and
+# setting the default_ream in it completely removes the need to have krb5.conf
+# set up, allowing to run a KDC without having the Kerberos client configured
+# on that box.
+[libdefaults]
+    default_realm = <%= @realm %>
+
+[kdcdefaults]
+    kdc_ports = <%= @kdc_ports %>
+
+[realms]
+    <%= @realm %> = {
+        database_name = <%= @kdc_database_path %>
+        acl_file = <%= @kadm5_acl_path %>
+        key_stash_file = <%= @kdc_stash_path %>
+        max_life = <%= @kdc_max_life %>
+        max_renewable_life = <%= @kdc_max_renewable_life %>
+        master_key_type = <%= @kdc_master_key_type %>
+        supported_enctypes = <%= @kdc_supported_enctypes.join(" ") %>
+        default_principal_flags = +preauth
+<% if @kdc_pkinit_identity -%>
+        pkinit_identity = <%= @kdc_pkinit_identity %>
+<% end -%>
+<% if @pkinit_anchors -%>
+        pkinit_anchors = <%= @pkinit_anchors %>
+<% end -%>
+<% if @kdc_iprop_port -%>
+        iprop_port = <%= @kdc_iprop_port %>
+<% end -%>
+<% if @kdc_iprop_logfile -%>
+        iprop_logfile = <%= @kdc_iprop_logfile %>
+<% end -%>
+<% if @kdc_iprop_resync_timeout -%>
+        iprop_resync_timeout = <%= @kdc_iprop_resync_timeout %>
+<% end -%>
+    }
+
+[logging]
+<% if @kdc_logfile -%>
+        kdc = <%= @kdc_logfile %>
+<% end -%>
+<% if @kadmind_logfile -%>
+        admin_server = <%= @kadmind_logfile %>
+<% end -%>

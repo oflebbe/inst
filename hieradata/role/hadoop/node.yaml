@@ -1,0 +1,12 @@
+---
+classes:
+  - inst::profile::hadoop::node
+
+system::packages:
+  tez: {}
+
+system::files:
+  '/grid':
+    ensure: 'directory'
+  '/grid/hadoop':
+    ensure: 'directory'

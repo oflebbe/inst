@@ -1,0 +1,8 @@
+#!/bin/sh
+
+me=$(realpath "$0")
+modulebase=$(dirname $(dirname "$me"))
+puppet-lint \
+	--no-hard_tabs-check \
+	--no-2sp_soft_tabs-check \
+	"$modulebase"

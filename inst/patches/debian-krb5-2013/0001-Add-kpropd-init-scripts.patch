@@ -1,0 +1,202 @@
+From: Mark Proehl <m.proehl@science-computing.de>
+Date: Tue, 13 Jan 2015 14:34:50 +0100
+Subject: [PATCH 1/2] Add kpropd init scripts
+
+---
+ debian/krb5-kdc.install    |   2 +
+ debian/krb5-kpropd.init    | 127 +++++++++++++++++++++++++++++++++++++++++++++
+ debian/krb5-kpropd.service |  14 +++++
+ debian/rules               |   5 +-
+ 4 files changed, 147 insertions(+), 1 deletion(-)
+ create mode 100755 debian/krb5-kpropd.init
+ create mode 100644 debian/krb5-kpropd.service
+
+diff --git a/debian/krb5-kdc.install b/debian/krb5-kdc.install
+index 93aecc4..0660c9f 100644
+--- a/debian/krb5-kdc.install
++++ b/debian/krb5-kdc.install
+@@ -8,3 +8,5 @@ usr/sbin/krb5kdc
+ usr/share/man/man8/krb5kdc.8
+ usr/share/man/man5/kdc.conf.5
+ usr/lib/*/krb5/plugins/kdb/db2.so
++lib/systemd/system/krb5-kpropd.service
++etc/init.d/krb5-kpropd
+diff --git a/debian/krb5-kpropd.init b/debian/krb5-kpropd.init
+new file mode 100755
+index 0000000..4098a19
+--- /dev/null
++++ b/debian/krb5-kpropd.init
+@@ -0,0 +1,127 @@
++#! /bin/sh
++### BEGIN INIT INFO
++# Provides:             krb5-kpropd
++# Required-Start:       $local_fs $remote_fs $network $syslog
++# Required-Stop:        $local_fs $remote_fs $network $syslog
++# X-Start-Before: $x-display-manager
++# Default-Start:        2 3 4 5
++# Default-Stop:         0 1 6
++# Short-Description:    MIT Kerberos slave KDC update server
++# Description:          Starts, stops, or restarts the MIT Kerberos slave KDC
++#                       update server
++### END INIT INFO
++
++# Author: Sam Hartman <hartmans@mit.edu>
++# Author: Russ Allbery <rra@debian.org>
++#
++# Based on the /etc/init.d/skeleton template as found in initscripts version
++# 2.86.ds1-15.
++
++PATH=/usr/sbin:/usr/bin:/sbin:/bin
++DESC="Kerberos slave KDC update server"
++NAME=kpropd
++DAEMON=/usr/sbin/$NAME
++DAEMON_ARGS=""
++PIDFILE=/var/run/$NAME.pid
++SCRIPTNAME=/etc/init.d/kpropd
++
++# Exit if the package is not installed.
++[ -x "$DAEMON" ] || exit 0
++
++# Read configuration if it is present.
++[ -r /etc/default/kpropd ] && . /etc/default/kpropd
++
++# Get the setting of VERBOSE and other rcS variables.
++[ -f /etc/default/rcS ] && . /etc/default/rcS
++
++# Define LSB log functions (requires lsb-base >= 3.0-6).
++. /lib/lsb/init-functions
++
++
++# Return
++#   0 if daemon has been started
++#   1 if daemon was already running
++#   2 if daemon could not be started
++do_start_kpropd()
++{
++    start-stop-daemon --start --quiet --pidfile $PIDFILE --startas $DAEMON --name $NAME --test \
++        > /dev/null || return 1
++    start-stop-daemon --start --quiet --make-pidfile --background --pidfile $PIDFILE --startas $DAEMON --name $NAME \
++        -- -D $DAEMON_ARGS || return 2
++}
++
++
++# Return
++#   0 if daemon has been stopped
++#   1 if daemon was already stopped
++#   2 if daemon could not be stopped
++#   other if a failure occurred
++do_stop_kpropd()
++{
++    start-stop-daemon --stop --quiet --retry=TERM/30/KILL/5 --pidfile $PIDFILE --name $NAME
++    RETVAL="$?"
++    [ "$RETVAL" = 2 ] && return 2
++    rm -f $PIDFILE
++    return "$RETVAL"
++}
++
++
++case "$1" in
++  start)
++    [ "$VERBOSE" != no ] && log_daemon_msg "Starting $DESC" "$NAME"
++    do_start_kpropd
++    case "$?" in
++      0|1)
++            [ "$VERBOSE" != no ] && log_end_msg 0
++        ;;
++      2)
++        [ "$VERBOSE" != no ] && log_end_msg 1
++        ;;
++    esac
++    ;;
++
++  stop)
++    [ "$VERBOSE" != no ] && log_daemon_msg "Stopping $DESC" "$NAME"
++    do_stop_kpropd
++    case "$?" in
++      0|1)
++        [ "$VERBOSE" != no ] && log_progress_msg "krb524d"
++        ;;
++      2)
++        [ "$VERBOSE" != no ] && log_end_msg 1
++        ;;
++    esac
++    ;;
++
++  restart|force-reload)
++    log_daemon_msg "Restarting $DESC" "$NAME"
++    do_stop_kpropd
++    case "$?" in
++      0|1)
++        do_start_kpropd
++        case "$?" in
++          0)
++	  log_end_msg 0
++	  ;;
++          1|2)
++            log_end_msg 1
++            ;;
++        esac
++        ;;
++      *)
++        log_end_msg 1
++        ;;
++    esac
++    ;;
++
++  status)
++    status_of_proc -p $PIDFILE "$DAEMON" "$NAME" && exit 0 || exit $?
++    ;;
++
++  *)
++    echo "Usage: $SCRIPTNAME {start|stop|restart|force-reload|status}" >&2
++    exit 3
++    ;;
++esac
++
++:
+diff --git a/debian/krb5-kpropd.service b/debian/krb5-kpropd.service
+new file mode 100644
+index 0000000..88eea12
+--- /dev/null
++++ b/debian/krb5-kpropd.service
+@@ -0,0 +1,14 @@
++[Unit]
++Description=Kerberos 5 slave KDC update server
++
++[Service]
++ExecReload=/bin/kill -HUP $MAINPID
++EnvironmentFile=-/etc/default/krb5-kpropd
++ExecStart=/usr/sbin/kpropd -D $DAEMON_ARGS
++InaccessibleDirectories=/etc/ssh /etc/ssl/private  /root
++ReadOnlyDirectories=/
++ReadWriteDirectories=/var/tmp /tmp /var/lib/krb5kdc /var/run /run
++CapabilityBoundingSet=CAP_NET_BIND_SERVICE
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/debian/rules b/debian/rules
+index e02a5e8..456a60b 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -116,6 +116,9 @@ install: build-arch
+ 	install -d $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/krb5 $(CURDIR)/debian/tmp/etc/insserv/overrides
+ 	install -m644 debian/krb5-kdc-ldap.insserv-override debian/tmp/etc/insserv/overrides/krb5-kdc
+ 	install -m644 $(CURDIR)/debian/README.mech.d $(CURDIR)/debian/libgssapi-krb5-2/etc/gss/mech.d/README
++	install -d -m755 $(CURDIR)/debian/tmp/lib/systemd/system $(CURDIR)/debian/tmp/etc/init.d
++	install -m755 $(CURDIR)/debian/krb5-kpropd.service $(CURDIR)/debian/tmp/lib/systemd/system/krb5-kpropd.service
++	install -m755 $(CURDIR)/debian/krb5-kpropd.init $(CURDIR)/debian/tmp/etc/init.d/krb5-kpropd
+ 	mv $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/libkdb_ldap* \
+ 	    $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/krb5/
+ 	rm -f $(CURDIR)/debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/krb5/libkdb_ldap*.so
+@@ -187,7 +190,7 @@ binary-arch: build-arch install
+ 	dh_installdocs
+ 	dh_installdebconf
+ 	DH_OPTIONS= dh_installinit -pkrb5-kdc --error-handler=init_error -- defaults 18 18 
+-		DH_OPTIONS= dh_installinit -pkrb5-admin-server -- defaults 18 18 
++	DH_OPTIONS= dh_installinit -pkrb5-admin-server -- defaults 18 18
+ 	dh_systemd_enable
+ 	dh_lintian
+ 	set -e ; for pkg in $(LIB_PACKAGES) ; do \
+-- 
+2.1.4
+

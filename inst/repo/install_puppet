@@ -1,0 +1,155 @@
+#!/bin/sh
+
+die() {
+	echo "failed"
+	exit 1
+}
+
+case "$1" in
+master)
+	# Add our own overlay repository for customized packages
+	echo "deb http://www.oflebbe.de/prot/ prot contrib" >/etc/apt/sources.list.d/prot.list
+	apt-key add "/etc/puppet/modules/inst/files/apt-repo-keys.asc" || die
+
+        # in case the template is out of date
+        apt-get update || die
+
+	apt-get -y install puppet puppetmaster-passenger  augeas-tools trocla git
+	
+	for i in puppetlabs-apt puppetlabs-ntp  \
+	               saz-timezone \
+	               duritong-trocla asciiduck-sssd \
+	               puppetlabs-inifile \
+	               puppetlabs-firewall saz-ssh \
+	               rgevaert-saslauthd \
+	               jpl-pam ; do
+             puppet module install $i || die
+        done
+    
+      (cd /etc/puppet/modules && git clone https://github.com/bergerjac/puppet-system.git system || die)
+
+	while systemctl status apache2 >/dev/null ; do
+		systemctl stop apache2
+		sleep 1
+	done
+
+	while systemctl status puppet >/dev/null ; do
+		systemctl stop puppet
+		sleep 1
+	done
+
+	# create SSH id for hadoop fencing and allow access via fileserver
+	keypath=/etc/puppet/files/hadoop
+	id="$keypath"/id_sshfence
+	mkdir -p "$keypath" || die
+	rm -f "$id" "$id".pub || die
+	ssh-keygen -q -f "$id" -P "" || die
+	chown puppet: "$id" "$id".pub || die
+	echo 'set /files/etc/puppet/fileserver.conf/files/allow "*"' | \
+		augtool -s || die
+
+	# get rid of possibly existing site.pp
+	spp=/etc/puppet/manifests/site.pp
+	[ -f "$spp" ] && ( mv "$spp" "$spp".$(date +"%Y%m%d%H%M%S") || die )
+
+	# throw away already configured SSL CA because master certificate
+	# initially contains subjectAltName "puppet" we do not want
+	rm -rf /var/lib/puppet/ssl || die
+
+	# configure allowable subjectAltNames for master SSL certificate
+	fqdn=$(hostname -f)
+	augpupconfmain=/files/etc/puppet/puppet.conf/main
+	echo "set $augpupconfmain/dns_alt_names $fqdn" | \
+		augtool -s || die
+
+	# WORKAROUND: patch the puppet master to allow requesting and signing
+	# certificates containing PKINIT extensions for Kerberos
+	apt-get -y install patch || die
+	puppetinst=/usr/lib/ruby/vendor_ruby/puppet
+	[ -f $puppetinst/face/ca.rb.orig ] || \
+		( cd $puppetinst && patch -b -p1 \
+			< /etc/puppet/modules/inst/files/puppet-3.7.2-pkinit-8.patch \
+			|| die )
+
+	# initialise our CA and get ourselves a certificate with the proper
+	# extensions
+	hieranode=/etc/puppet/hieradata/node/${fqdn}.yaml
+	grep kerberos::client $hieranode >/dev/null && \
+		( echo "set $augpupconfmain/request_pkinit_client true" | \
+			augtool -s || die )
+	grep kerberos::server $hieranode >/dev/null && \
+		( echo "set $augpupconfmain/request_pkinit_kdc true" | \
+			augtool -s || die )
+	echo "Creating SSL CA and certificate for the master ..."
+	puppet cert generate $fqdn || die
+
+	# activate bootstrap site.pp
+	cp /etc/puppet/manifests/site.pp.bootstrap \
+		/etc/puppet/manifests/site.pp \
+		|| die
+
+	systemctl enable apache2 || die
+	systemctl start apache2 || die
+	echo Done.
+	;;
+
+agent)
+	# in case the template is out of date
+	apt-get update || die
+
+	# cron: PROT-271: work around creation of cron entries as root instead
+	# of actual user by installing before running puppet for the first time
+	apt-get -y install puppet augeas-tools cron || die
+	while systemctl status puppet >/dev/null ; do
+		systemctl stop puppet
+		sleep 1
+	done
+
+	master=$(getent hosts management | awk '{print $2}')
+	echo "set /files/etc/puppet/puppet.conf/main/server $master" | \
+		augtool -s || die
+	puppet agent --enable || die
+
+	# WORKAROUND: patch the puppet client (if not yet patched) to allow
+	# requesting certificates containing PKINIT extensions for Kerberos
+	apt-get -y install patch || die
+	puppetinst=/usr/lib/ruby/vendor_ruby/puppet
+	[ -f $puppetinst/face/ca.rb.orig ] || \
+		( cd $puppetinst && patch -b -p1 \
+			< /tmp/puppet-3.7.2-pkinit-8.patch \
+			|| die )
+
+	fqdn=$(hostname -f)
+	hieranode=/tmp/$fqdn.yaml
+	augpupconfmain=/files/etc/puppet/puppet.conf/main
+	grep kerberos::client $hieranode >/dev/null && \
+		( echo "set $augpupconfmain/request_pkinit_client true" | \
+			augtool -s || die )
+	grep kerberos::server $hieranode >/dev/null && \
+		( echo "set $augpupconfmain/request_pkinit_kdc true" | \
+			augtool -s || die )
+	puppet agent -t # is supposed to fail || die
+	;;
+
+prime-master)
+	# activate our site.pp
+	cp /etc/puppet/manifests/site.pp.production \
+		/etc/puppet/manifests/site.pp || die
+        systemctl restart apache2 || die
+	;;
+
+bootstrap)
+	systemctl enable puppet || die
+
+	# start a one-shot run with a special bootstrapping fact set so we
+	# wait longer for our nodes to appear
+	FACTER_hadoop_bootstrap=1 \
+		FACTER_kerberos_bootstrap=1 \
+		puppet agent -t --color=off --debug 2>&1 | \
+		tee /var/log/puppet/inst-bootstrap.log \
+		|| die
+
+	# finally start the background puppet agent for good
+	systemctl start puppet || die
+	;;
+esac

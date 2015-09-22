@@ -1,0 +1,485 @@
+--- puppet/face/ca.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/face/ca.rb	2015-02-15 00:03:43.744383487 +0000
+@@ -178,7 +178,7 @@
+       Puppet::SSL::Host.ca_location = :only
+ 
+       begin
+-        ca.sign(host, options[:allow_dns_alt_names])
++        ca.sign(host, options)
+       rescue ArgumentError => e
+         if e.to_s =~ /Could not find certificate request/
+           e.to_s
+--- puppet/face/certificate.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/face/certificate.rb	2015-02-15 00:03:43.744383487 +0000
+@@ -129,7 +129,7 @@
+           raise ArgumentError, "This process is not configured as a certificate authority"
+         end
+ 
+-        ca.sign(name, options[:allow_dns_alt_names])
++        ca.sign(name, options)
+       end
+     end
+   end
+--- puppet/application/cert.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/application/cert.rb	2015-02-15 00:03:43.744383487 +0000
+@@ -73,6 +73,14 @@
+     options[:allow_dns_alt_names] = value
+   end
+ 
++  option("--[no-]allow-pkinit-kdc") do |value|
++    options[:allow_pkinit_kdc] = value
++  end
++
++  option("--[no-]allow-pkinit-client") do |value|
++    options[:allow_pkinit_client] = value
++  end
++
+   option("--verbose", "-v") do |arg|
+     Puppet::Util::Log.level = :info
+   end
+@@ -242,6 +250,9 @@
+       if Puppet.settings.set_by_cli?(:dns_alt_names)
+         options[:dns_alt_names] = Puppet[:dns_alt_names]
+       end
++      options[:request_pkinit_client] ||= Puppet[:request_pkinit_client]
++      options[:request_pkinit_kdc] ||= Puppet[:request_pkinit_kdc]
++      options[:kerberos_realm] ||= Puppet[:kerberos_realm]
+     end
+ 
+     begin
+--- puppet/ssl/certificate_authority/interface.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/ssl/certificate_authority/interface.rb	2015-02-15 00:03:43.744383487 +0000
+@@ -155,7 +155,7 @@
+           list = subjects == :all ? ca.waiting? : subjects
+           raise InterfaceError, "No waiting certificate requests to sign" if list.empty?
+           list.each do |host|
+-            ca.sign(host, options[:allow_dns_alt_names])
++            ca.sign(host, options)
+           end
+         end
+ 
+--- puppet/ssl/host.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/ssl/host.rb	2015-02-15 00:03:43.744383487 +0000
+@@ -177,6 +177,15 @@
+       elsif Puppet::SSL::CertificateAuthority.ca? and fqdn = Facter.value(:fqdn) and domain = Facter.value(:domain)
+         options[:dns_alt_names] = "puppet, #{fqdn}, puppet.#{domain}"
+       end
++      if Puppet[:request_pkinit_client]
++        options[:request_pkinit_client] ||= Puppet[:request_pkinit_client]
++      end
++      if Puppet[:request_pkinit_kdc]
++        options[:request_pkinit_kdc] ||= Puppet[:request_pkinit_kdc]
++      end
++      if Puppet[:kerberos_realm]
++        options[:kerberos_realm] ||= Puppet[:kerberos_realm]
++      end
+     end
+ 
+     csr_attributes = Puppet::SSL::CertificateRequestAttributes.new(Puppet[:csr_attributes])
+@@ -238,7 +247,7 @@
+     # should use it to sign our request; else, just try to read
+     # the cert.
+     if ! certificate and ca = Puppet::SSL::CertificateAuthority.instance
+-      ca.sign(self.name, true)
++      ca.sign(self.name, { :allow_dns_alt_names => true } )
+     end
+   end
+ 
+--- puppet/ssl/certificate_factory.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/ssl/certificate_factory.rb	2015-02-15 00:34:31.886349372 +0000
+@@ -80,7 +80,7 @@
+ 
+     # Extract the requested extensions from the CSR.
+     requested_exts = csr.request_extensions.inject({}) do |hash, re|
+-      hash[re["oid"]] = [re["value"], re["critical"]]
++      hash[re["oid"]] = [re["value"], re["raw"], re["critical"]]
+       hash
+     end
+ 
+@@ -110,6 +110,15 @@
+     exts = [defaults, requested_exts, extensions, override].
+       inject({}) {|ret, val| ret.merge(val) }
+ 
++    # special case PKINIT: We've carefully vetted the CSR in the CA for
++    # extendedKeyUsages but they have just been overwritten. Add them back in.
++    if csr.subject_alt_names.any? {|x| x =~ /^PKINIT-Client:/ }
++      exts["extendedKeyUsage"][0].push(Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_CLIENT)
++    end
++    if csr.subject_alt_names.any? {|x| x =~ /^PKINIT-KDC:/ }
++      exts["extendedKeyUsage"][0].push(Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_KDC)
++    end
++
+     cert.extensions = exts.map do |oid, val|
+       generate_extension(ef, oid, *val)
+     end
+@@ -194,7 +206,7 @@
+   # @return [OpenSSL::X509::Extension]
+   #
+   # @api private
+-  def self.generate_extension(ef, oid, val, crit = false)
++  def self.generate_extension(ef, oid, val, raw = nil, crit = false)
+ 
+     val = val.join(', ') unless val.is_a? String
+ 
+@@ -203,7 +215,11 @@
+     # always do. --daniel 2011-10-18
+     crit = false if oid == "subjectAltName"
+ 
+-    if Puppet::SSL::Oids.subtree_of?('id-ce', oid) or Puppet::SSL::Oids.subtree_of?('id-pkix', oid)
++    # subjectAltNames can contain Kerberos PKINIT extensions. So we need to
++    # pass them raw.
++    if oid == "subjectAltName"
++      OpenSSL::X509::Extension.new(oid, raw, crit)
++    elsif Puppet::SSL::Oids.subtree_of?('id-ce', oid) or Puppet::SSL::Oids.subtree_of?('id-pkix', oid)
+       # Attempt to create a X509v3 certificate extension. Standard certificate
+       # extensions may need access to the associated subject certificate and
+       # issuing certificate, so must be created by the OpenSSL::X509::ExtensionFactory
+--- puppet/ssl/certificate_request.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/ssl/certificate_request.rb	2015-02-15 00:03:43.744383487 +0000
+@@ -138,11 +138,11 @@
+       case ext_values.length
+       when 2
+         ev = OpenSSL::X509::Extension.new(ext_values[0].value, ext_values[1].value)
+-        { "oid" => ev.oid, "value" => ev.value }
++        { "oid" => ev.oid, "value" => ev.value, "raw" => ext_values[1].value }
+ 
+       when 3
+         ev = OpenSSL::X509::Extension.new(ext_values[0].value, ext_values[2].value, ext_values[1].value)
+-        { "oid" => ev.oid, "value" => ev.value, "critical" => ev.critical? }
++        { "oid" => ev.oid, "value" => ev.value, "critical" => ev.critical?, "raw" => ext_values[1].value }
+ 
+       else
+         raise Puppet::Error, "In #{attribute.oid}, expected extension record #{index} to have two or three items, but found #{ext_values.length}"
+@@ -150,9 +150,99 @@
+     end
+   end
+ 
++  PKINIT_KEY_USAGE_CLIENT = "1.3.6.1.5.2.3.4"
++  PKINIT_KEY_USAGE_KDC = "1.3.6.1.5.2.3.5"
++  PKINIT_SAN_OID = '1.3.6.1.5.2.2'
++
++  def get_pkinit_principal(san)
++    # verify PKINIT ASN.1 up to the realm part
++    unless san.is_a? OpenSSL::ASN1::ASN1Data and
++      san.value[0].is_a? OpenSSL::ASN1::ObjectId and
++      san.value[0].value == PKINIT_SAN_OID and
++      san.value[1].is_a? OpenSSL::ASN1::ASN1Data and
++      san.value[1].value[0].is_a? OpenSSL::ASN1::Sequence
++      san.value[1].value[0].value[0].is_a? OpenSSL::ASN1::ASN1Data and
++      san.value[1].value[0].value[0].value[0].is_a? OpenSSL::ASN1::GeneralString and
++      san.value[1].value[0].value[0].value[0].value
++      return nil
++    end
++
++    # extract realm and go on to verify client part up to the principal primary
++    realm = san.value[1].value[0].value[0].value[0].value
++    client = san.value[1].value[0].value[1]
++    unless client.is_a? OpenSSL::ASN1::ASN1Data and
++      client.value[0].is_a? OpenSSL::ASN1::Sequence and
++      client.value[0].value[0].is_a? OpenSSL::ASN1::ASN1Data and
++      client.value[0].value[0].value[0].is_a? OpenSSL::ASN1::Integer and
++      client.value[0].value[0].value[0].value == 1 and
++      client.value[0].value[1].is_a? OpenSSL::ASN1::ASN1Data and
++      client.value[0].value[1].value[0].is_a? OpenSSL::ASN1::Sequence and
++      client.value[0].value[1].value[0].value[0].is_a? OpenSSL::ASN1::GeneralString and
++      client.value[0].value[1].value[0].value[0].value
++      return nil
++    end
++
++    # extract primary and possibly *one* instance
++    princ_parts = client.value[0].value[1].value[0].value
++    principal = princ_parts[0].value
++    instance = princ_parts[1]
++    if instance
++      unless instance.is_a? OpenSSL::ASN1::GeneralString and
++        instance.value and
++        # we don't sign anything with multiple instances
++        not princ_parts[2]
++        return nil
++      end
++
++      principal = principal + "/" + instance.value
++    end
++
++    # return <primary>[/<instance>]@<realm>
++    return principal + "@" + realm
++  end
++
++  def decode_subject_alt_name(san)
++    sanasn1 = OpenSSL::ASN1.decode(san)
++    unless sanasn1.is_a? OpenSSL::ASN1::Sequence and
++      sanasn1.value.all? {|x| x.is_a? OpenSSL::ASN1::ASN1Data }
++      return nil
++    end
++
++    alt_names = Array.new
++    sanasn1.value.each do |san|
++      # DNS:
++      if san.tag == 2
++        alt_names << "DNS:" + san.value
++      elsif san.tag == 0
++        principal = get_pkinit_principal(san)
++        return nil unless principal
++
++        if principal =~ /^krbtgt\//
++          # that's our own syntax until OpenSSL starts to support it somehow
++          alt_names << "PKINIT-KDC:" + principal
++        else
++          alt_names << "PKINIT-Client:" + principal
++        end
++      else
++        return nil
++      end
++    end
++
++    return alt_names
++  end
++
+   def subject_alt_names
+     @subject_alt_names ||= request_extensions.
+       select {|x| x["oid"] == "subjectAltName" }.
++      map {|x| decode_subject_alt_name(x["raw"]) }.
++      flatten.
++      sort.
++      uniq
++  end
++
++  def extended_key_usages
++    @extended_key_usages ||= request_extensions.
++      select {|x| x["oid"] == "extendedKeyUsage" }.
+       map {|x| x["value"].split(/\s*,\s*/) }.
+       flatten.
+       sort.
+@@ -216,6 +306,28 @@
+     'subjectAltName', '2.5.29.17',
+   ]
+ 
++  def build_pkinit_asn1(realm, princ_parts)
++    # build up ASN.1 structure
++    # Seems totally encrypted? Yep, it's ASN.1!
++    OpenSSL::ASN1::Sequence.new( [
++      OpenSSL::ASN1::ObjectId.new(PKINIT_SAN_OID),
++      OpenSSL::ASN1::Sequence.new( [
++        # Yay, the realm!
++        OpenSSL::ASN1::GeneralString.new(realm,
++          0, :EXPLICIT, :CONTEXT_SPECIFIC),
++        OpenSSL::ASN1::Sequence.new( [
++          OpenSSL::ASN1::Integer.new(1,
++            0, :EXPLICIT, :CONTEXT_SPECIFIC),
++          OpenSSL::ASN1::Sequence.new(
++            princ_parts.map {|x|
++              # Whoopie, a client principal!
++              OpenSSL::ASN1::GeneralString.new(x)
++            } ,1, :EXPLICIT, :CONTEXT_SPECIFIC)
++        ], 1, :EXPLICIT, :CONTEXT_SPECIFIC),
++      ], 0, :EXPLICIT, :CONTEXT_SPECIFIC),
++    ], 0, :IMPLICIT )
++  end
++
+   # @api private
+   def extension_request_attribute(options)
+     extensions = []
+@@ -235,12 +347,43 @@
+       end
+     end
+ 
+-    if options[:dns_alt_names]
+-      names = options[:dns_alt_names].split(/\s*,\s*/).map(&:strip) + [name]
+-      names = names.sort.uniq.map {|name| "DNS:#{name}" }.join(", ")
+-      alt_names_ext = extension_factory.create_extension("subjectAltName", names, false)
++    # if we need to request pkinit extensions, we have to craft the whole
++    # subjectAltName ASN.1 structure ourselves because the extension factory
++    # only deals in string values and supports only the DNS:<fqdn> syntax
++    if options[:request_pkinit_client] or
++      options[:request_pkinit_kdc] or
++      options[:dns_alt_names]
++      altnames = Array.new
++
++      # subjectAltNames are simple:
++      if options[:dns_alt_names]
++        names = options[:dns_alt_names].split(/\s*,\s*/).map(&:strip) + [name]
++        names = names.sort.uniq
++
++        names.each do |name|
++          altnames << OpenSSL::ASN1::IA5String(name, 2, :IMPLICIT)
++        end
++      end
++
++      princ = (options[:certname] || name)
++      realm = (options[:kerberos_realm] || princ.sub(/^[^\.]+\./, "")).upcase
++
++      if options[:request_pkinit_client]
++        altnames << build_pkinit_asn1(realm, [ princ ] )
++        extensions << extension_factory.create_extension("extendedKeyUsage", PKINIT_KEY_USAGE_CLIENT, true)
++      end
++      if options[:request_pkinit_kdc]
++        altnames << build_pkinit_asn1(realm, [ "krbtgt", realm ] )
++        extensions << extension_factory.create_extension("extendedKeyUsage", PKINIT_KEY_USAGE_KDC, true)
++      end
++
++      extensions << OpenSSL::X509::Extension.new(
++        OpenSSL::ASN1::Sequence.new( [
++          OpenSSL::ASN1::ObjectId.new('subjectAltName'),
++          OpenSSL::ASN1::OctetString.new(
++            OpenSSL::ASN1::Sequence.new(altnames).to_der ) ] ) )
+ 
+-      extensions << alt_names_ext
++      # piece of cake! :)
+     end
+ 
+     unless extensions.empty?
+--- puppet/ssl/certificate_authority.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/ssl/certificate_authority.rb	2015-02-15 00:28:36.862448089 +0000
+@@ -19,7 +19,7 @@
+   # Adding an extension to this whitelist simply means we will consider it
+   # further, not that we will always accept a certificate with an extension
+   # requested on this list.
+-  RequestExtensionWhitelist = %w{subjectAltName}
++  RequestExtensionWhitelist = %w{subjectAltName extendedKeyUsage}
+ 
+   require 'puppet/ssl/certificate_factory'
+   require 'puppet/ssl/inventory'
+@@ -124,10 +124,15 @@
+     san = options[:dns_alt_names]
+ 
+     host = Puppet::SSL::Host.new(name)
+-    host.generate_certificate_request(:dns_alt_names => san)
++    host.generate_certificate_request(:dns_alt_names => san,
++                                      :request_pkinit_client => options[:request_pkinit_client],
++                                      :request_pkinit_kdc => options[:request_pkinit_kdc])
+     # CSR may have been implicitly autosigned, generating a certificate
+     # Or sign explicitly
+-    host.certificate || sign(name, !!san)
++    # !!san, options: implicitly allow if request contains it (!?)
++    host.certificate || sign(name, { :allow_dns_alt_names => !!san,
++                             :allow_pkinit_client => options[:request_pkinit_client],
++                             :allow_pkinit_kdc => options[:request_pkinit_kdc] } )
+   end
+ 
+   # Generate our CA certificate.
+@@ -145,7 +150,7 @@
+     request.generate(host.key)
+ 
+     # Create a self-signed certificate.
+-    @certificate = sign(host.name, false, request)
++    @certificate = sign(host.name, {}, request)
+ 
+     # And make sure we initialize our CRL.
+     crl
+@@ -271,7 +276,7 @@
+   end
+ 
+   # Sign a given certificate request.
+-  def sign(hostname, allow_dns_alt_names = false, self_signing_csr = nil)
++  def sign(hostname, options = {}, self_signing_csr = nil)
+     # This is a self-signed certificate
+     if self_signing_csr
+       # # This is a self-signed certificate, which is for the CA.  Since this
+@@ -282,7 +287,7 @@
+       cert_type = :ca
+       issuer = csr.content
+     else
+-      allow_dns_alt_names = true if hostname == Puppet[:certname].downcase
++      options[:allow_dns_alt_names] = true if hostname == Puppet[:certname].downcase
+       unless csr = Puppet::SSL::CertificateRequest.indirection.find(hostname)
+         raise ArgumentError, "Could not find certificate request for #{hostname}"
+       end
+@@ -292,7 +297,7 @@
+ 
+       # Make sure that the CSR conforms to our internal signing policies.
+       # This will raise if the CSR doesn't conform, but just in case...
+-      check_internal_signing_policies(hostname, csr, allow_dns_alt_names) or
++      check_internal_signing_policies(hostname, csr, options) or
+         raise CertificateSigningError.new(hostname), "CSR had an unknown failure checking internal signing policies, will not sign!"
+     end
+ 
+@@ -320,7 +325,7 @@
+     cert
+   end
+ 
+-  def check_internal_signing_policies(hostname, csr, allow_dns_alt_names)
++  def check_internal_signing_policies(hostname, csr, options)
+     # Reject unknown request extensions.
+     unknown_req = csr.request_extensions.reject do |x|
+       RequestExtensionWhitelist.include? x["oid"] or
+@@ -359,19 +364,51 @@
+     unless csr.subject_alt_names.empty?
+       # If you alt names are allowed, they are required. Otherwise they are
+       # disallowed. Self-signed certs are implicitly trusted, however.
+-      unless allow_dns_alt_names
++      unless options[:allow_dns_alt_names]
+         raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains subject alternative names (#{csr.subject_alt_names.join(', ')}), which are disallowed. Use `puppet cert --allow-dns-alt-names sign #{csr.name}` to sign this request."
+       end
+ 
+       # If subjectAltNames are present, validate that they are only for DNS
+-      # labels, not any other kind.
+-      unless csr.subject_alt_names.all? {|x| x =~ /^DNS:/ }
+-        raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains a subjectAltName outside the DNS label space: #{csr.subject_alt_names.join(', ')}.  To continue, this CSR needs to be cleaned."
++      # and PKINIT labels, not any other kind.
++      unless csr.subject_alt_names.all? {|x| x =~ /^DNS:/ or x =~ /^PKINIT-/ }
++        raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains a subjectAltName outside the DNS and PKINIT label spaces: #{csr.subject_alt_names.join(', ')}.  To continue, this CSR needs to be cleaned."
+       end
+ 
+       # Check for wildcards in the subjectAltName fields too.
+       if csr.subject_alt_names.any? {|x| x.include? '*' }
+-        raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' subjectAltName contains a wildcard, which is not allowed: #{csr.subject_alt_names.join(', ')}  To continue, this CSR needs to be cleaned."
++        raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' subjectAltName contains a wildcard, which is not allowed: #{csr.subject_alt_names.join(', ')}  To continue, this CSR needs to be cleaned."
++      end
++
++      if csr.subject_alt_names.any? {|x| x =~ /^PKINIT-KDC:/ }
++        unless csr.extended_key_usages.include? Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_KDC
++          raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains a PKINIT extension for KDCs (#{csr.subject_alt_names.join(', ')}) but not the necessary extended key usage (#{Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_KDC}). To continue, this CSR needs to be cleaned."
++        end
++
++        unless options[:allow_pkinit_kdc]
++          raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains a PKINIT extension for KDCs (#{csr.subject_alt_names.join(', ')}), which is disallowed. Use `puppet cert --allow-pkinit-kdc sign #{csr.name}` to sign this request."
++        end
++      end
++
++      if csr.subject_alt_names.any? {|x| x =~ /^PKINIT-Client:/ }
++        unless csr.extended_key_usages.include? Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_CLIENT
++          raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains a PKINIT extension for Kerberos clients (#{csr.subject_alt_names.join(', ')}) but not the necessary extended key usage (#{Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_CLIENT}). To continue, this CSR needs to be cleaned."
++        end
++
++        unless options[:allow_pkinit_client]
++          raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains a PKINIT extension for Kerberos clients (#{csr.subject_alt_names.join(', ')}), which is disallowed. Use `puppet cert --allow-pkinit-client sign #{csr.name}` to sign this request."
++        end
++      end
++    end
++
++    csr.extended_key_usages.each do |usage|
++      if usage == Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_KDC and
++         csr.subject_alt_names.none? {|x| x =~ /^PKINIT-KDC:/ }
++        raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains an extended key usage for Kerberos KDCs using PKINIT but no KDC principals, which is disallowed. To continue, this CSR needs to be cleaned."
++      end
++
++      if usage == Puppet::SSL::CertificateRequest::PKINIT_KEY_USAGE_CLIENT and
++         csr.subject_alt_names.none? {|x| x =~ /^PKINIT-Client:/ }
++        raise CertificateSigningError.new(hostname), "CSR '#{csr.name}' contains an extended key usage for Kerberos clients doing PKINIT but no client principals, which is disallowed. To continue, this CSR needs to be cleaned."
+       end
+     end
+ 
+--- puppet/defaults.rb.orig	2014-10-21 21:52:27.000000000 +0000
++++ puppet/defaults.rb	2015-02-15 00:03:43.748383397 +0000
+@@ -661,6 +661,21 @@
+ respond on two physically separate networks under different names.
+ EOT
+     },
++    :request_pkinit_client => {
++      :default => false,
++      :type => :boolean,
++      :desc => "Add a PKINIT Client subjectAltName extension to certificate requests.",
++    },
++    :request_pkinit_kdc => {
++      :default => false,
++      :type => :boolean,
++      :desc => "Add a PKINIT KDC subjectAltName extension to certificate requests.",
++    },
++    :kerberos_realm => {
++      :default => nil,
++      :type => :string,
++      :desc => "The Kerberos realm to use in PKINIT extesions.",
++    },
+     :csr_attributes => {
+       :default => "$confdir/csr_attributes.yaml",
+       :type => :file,

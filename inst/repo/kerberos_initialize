@@ -1,0 +1,10 @@
+#!/bin/sh
+
+kadmin.local -q 'getprinc proto/admin' | grep '^Expiration' > /dev/null
+if [ $? = 0 ]; then
+    echo "KERBEROS already initialized, nothing to do ..."
+    exit 0
+fi
+kadmin.local -q 'add_policy -maxlife 30days -minlife 1day -minlength 10  -minclasses 3 -history 10 default'
+kadmin.local -q 'addprinc -pw "DrPig!12345" proto/admin@BIGTOP.ORG'
+kadmin.local -q 'addprinc -pw "DrPig!12345" testuser@BIGTOP.ORG'

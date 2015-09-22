@@ -1,0 +1,14 @@
+[Unit]
+Before=runlevel2.target runlevel3.target runlevel4.target runlevel5.target shutdown.target
+After=systemd-journald-dev-log.socket remote-fs.target
+
+[Service]
+Type=forking
+Restart=no
+ExecStart=/etc/init.d/hadoop-hdfs-zkfc start
+PIDFile=/var/run/hadoop-hdfs/hadoop-hdfs-zkfc.pid
+
+
+[Install]
+WantedBy=multi-user.target
+

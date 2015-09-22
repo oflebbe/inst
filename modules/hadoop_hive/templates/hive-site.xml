@@ -1,0 +1,184 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+<!-- Licensed to the Apache Software Foundation (ASF) under one or more       -->
+<!-- contributor license agreements.  See the NOTICE file distributed with    -->
+<!-- this work for additional information regarding copyright ownership.      -->
+<!-- The ASF licenses this file to You under the Apache License, Version 2.0  -->
+<!-- (the "License"); you may not use this file except in compliance with     -->
+<!-- the License.  You may obtain a copy of the License at                    -->
+<!--                                                                          -->
+<!--     http://www.apache.org/licenses/LICENSE-2.0                           -->
+<!--                                                                          -->
+<!-- Unless required by applicable law or agreed to in writing, software      -->
+<!-- distributed under the License is distributed on an "AS IS" BASIS,        -->
+<!-- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. -->
+<!-- See the License for the specific language governing permissions and      -->
+<!-- limitations under the License.                                           -->
+
+<configuration>
+
+<!-- Hive Configuration can either be stored in this file or in the hadoop configuration files  -->
+<!-- that are implied by Hadoop setup variables.                                                -->
+<!-- Aside from Hadoop setup variables - this file is provided as a convenience so that Hive    -->
+<!-- users do not have to edit hadoop configuration files (that may be managed as a centralized -->
+<!-- resource).                                                                                 -->
+
+<!-- Hive Execution Parameters -->
+
+<% if @hbase_master != "" -%>
+<property>
+  <name>hbase.master</name>
+  <value><%= @hbase_master %></value>
+  <description>http://wiki.apache.org/hadoop/Hive/HBaseIntegration</description>
+</property>
+<% end -%>
+
+<% if @hbase_zookeeper_quorum != "" -%>
+<property>
+  <name>hbase.zookeeper.quorum</name>
+  <value><%= @hbase_zookeeper_quorum %></value>
+  <description>http://wiki.apache.org/hadoop/Hive/HBaseIntegration</description>
+</property>
+<% end -%>
+
+<% if @hive_zookeeper_quorum != "" -%>
+<property>
+  <name>hive.support.concurrency</name>
+  <description>Enable Hive's Table Lock Manager Service</description>
+  <value>true</value>
+</property>
+
+<property>
+  <name>hive.zookeeper.quorum</name>
+  <description>Zookeeper quorum used by Hive's Table Lock Manager</description>
+  <value><%= @hive_zookeeper_quorum %></value>
+</property>
+<% end -%>
+
+<property>
+  <name>javax.jdo.option.ConnectionURL</name>
+  <value>jdbc:derby:;databaseName=/var/lib/hive/metastore/metastore_db;create=true</value>
+  <description>JDBC connect string for a JDBC metastore</description>
+</property>
+
+<property>
+  <name>javax.jdo.option.ConnectionDriverName</name>
+  <value>org.apache.derby.jdbc.EmbeddedDriver</value>
+  <description>Driver class name for a JDBC metastore</description>
+</property>
+
+<property>
+  <name>hive.server2.thrift.port</name>
+  <value><%= @port %></value>
+  <description>Port number of HiveServer2 Thrift interface when hive.server2.transport.mode is 'binary'.</description>
+</property>
+
+
+<property>
+  <name>hive.execution.engine</name>
+  <value><%= @engine %></value>
+  <description>
+    Expects one of [mr, tez].
+    Chooses execution engine. Options are: mr (Map reduce, default) or tez (hadoop 2 only)
+  </description>
+</property>
+
+<property>
+  <name>hive.server2.tez.default.queues</name>
+  <value>default</value>
+</property>
+
+<property>
+  <name>hive.server2.enable.doAs</name>
+  <value><%= @enable_doas %></value>
+</property>
+
+<% if @kerberos_realm != "" -%>
+<property>
+  <name>hive.server2.authentication.kerberos.keytab</name>
+  <value>/etc/hive.keytab</value>
+</property>
+
+<property>
+  <name>hive.server2.authentication.kerberos.principal</name>
+  <value>hive/_HOST@<%= @kerberos_realm %></value>
+</property>
+
+<property>
+  <name>hive.server2.authentication</name>
+  <value>KERBEROS</value>
+</property>
+
+<property>
+  <name>hive.cluster.delegation.token.store.zookeeper.acl</name>
+  <value><%= @hive_cluster_delegation_token_store_zookeeper_acl %></value>
+</property>
+<% end -%>
+
+<% if @enable_sql_std_authorization == "true" -%>
+<!-- see http://dev.hortonworks.com.s3.amazonaws.com/HDPDocuments/HDP2/HDP-2.1.1/bk_dataintegration/content/ch_using-hive-authorization.html -->
+<property>
+  <name>hive.security.authorization.enabled</name>
+  <value>true</value>
+  <description>enable or disable the hive client authorization</description>
+</property>
+<property>
+  <name>hive.security.authorization.createtable.owner.grants</name>
+  <value>ALL</value>
+  <description>the privileges automatically granted to the owner whenever a table gets created. An example like "select,drop" will grant select and drop privilege to the owner of the table</description>
+</property>
+<property>
+  <name>hive.security.authenticator.manager</name>
+  <value>org.apache.hadoop.hive.ql.security.SessionStateUserAuthenticator</value>
+</property>
+<property>
+  <name>hive.users.in.admin.role</name>
+  <value>hive,hdfs</value>
+</property>
+<property>
+  <name>hive.security.authorization.manager</name>
+  <value>org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory</value>
+</property>
+<property>
+  <name>hive.metastore.uris</name>
+  <value> </value>
+</property>
+<% else -%>
+<property>
+  <name>hive.server2.enable.doAs</name>
+  <value><%= @enable_doas %></value>
+</property>
+<% end -%>
+
+<property>
+  <name>hive.vectorized.execution.enabled</name>;
+  <value>true</value>
+</property>
+
+<property>
+  <name>hive.optimize.ppd</name>
+  <value>true</value>
+</property>
+
+<property>
+  <name>hive.optimize.index.filter</name>
+  <value>true</value>
+</property>
+
+<property>
+  <name>hive.optimize.ppd.storage</name>
+  <value>true</value>
+</property>
+
+<property>
+  <name>hive.vectorized.groupby.maxentries</name>
+  <value>10240</value>
+</property>
+
+<property>
+  <name>hive.vectorized.groupby.flush.percent</name>
+  <value>0.1</value>
+</property>
+
+</configuration>

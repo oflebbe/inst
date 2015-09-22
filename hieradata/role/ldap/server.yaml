@@ -1,0 +1,4 @@
+---
+classes:
+  - inst::profile::ldap::server
+  - ldap::server

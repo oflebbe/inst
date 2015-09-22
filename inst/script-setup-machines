@@ -1,0 +1,119 @@
+#!/usr/bin/env python
+# lxc tut schon
+
+import os
+import shutil
+import sys
+import time
+
+REPO="%s/repo" % os.environ["PWD"]
+LXCPATH="/var/lib/lxc/"
+
+import os
+
+
+# Yarn Ressourcemanager immer auf dem managentnode
+
+machines=( "node1", "node2", "node3")
+
+def setupLxcMachines(machines, use_apt_cacher_ng):
+
+  address={}
+
+## parse hosts for ip adresses
+  input = open(  os.path.join( REPO, "hosts"))
+  line = input.readline()
+  while line != '' :
+    line = line.strip()
+    if line.startswith("#") :
+      line = input.readline()
+      continue
+    tok = line.split()
+    for i in tok[1:] :
+      address[ i] = tok[0]
+    line = input.readline()
+
+  input.close()
+
+  for m in machines :
+
+    # destroy machines
+    os.system( "lxc-stop -n %s -k 2>/dev/null 2>/dev/null" % m)
+    os.system( "lxc-destroy -n %s 2>/dev/null" % m)
+    os.system( "lxc-create -n %s -t debian -- -r jessie" % m)
+
+    shutil.copyfile( os.path.join( REPO, "hosts"), os.path.join( LXCPATH, m, "rootfs/etc/hosts"))
+    shutil.copyfile( "/etc/resolv.conf", os.path.join( LXCPATH, m, "rootfs/etc/resolv.conf"))
+
+    out = open( os.path.join( LXCPATH, m, "config"), "a")
+
+    print >>out, """
+lxc.network.type=veth
+lxc.network.flags=up
+lxc.network.link=virbr1
+# See /lib/systemd/system/getty-static.service
+lxc.tty=6
+"""
+
+    out.close()
+
+    out = open( os.path.join( LXCPATH, m, "rootfs/etc/network/interfaces"), "w")
+    print >>out, """
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+   address %s
+   netmask 255.255.255.0
+   gateway 192.168.100.1
+""" % address[ m]
+    out.close()
+
+    os.mkdir(  os.path.join( LXCPATH, m, "rootfs/root/.ssh"))
+    os.chmod(  os.path.join( LXCPATH, m, "rootfs/root/.ssh"), 0700)
+
+    # kopiere lokalen DSA Schluessel
+    shutil.copyfile( os.path.join( os.environ["HOME"], ".ssh/id_dsa.pub"),  os.path.join( LXCPATH, m, "rootfs/root/.ssh/authorized_keys"))
+    os.chmod( os.path.join( LXCPATH, m, "rootfs/root/.ssh/authorized_keys"), 0600)
+
+    inn = open( os.path.join( LXCPATH, m, "rootfs/etc/ssh/sshd_config"), "r")
+    out = open( os.path.join( LXCPATH, m, "rootfs/etc/ssh/sshd_config.new"), "w")
+
+    # Enable Root Login
+    line = inn.readline()
+    while line != "" :
+        if line.startswith("PermitRootLogin") :
+          line = "PermitRootLogin yes\n"
+        out.write( line)
+        line = inn.readline()
+    inn.close()
+    out.close()
+
+    if use_apt_cacher_ng:
+        # configure apt-cacher-ng on host machine as HTTP proxy for apt to speed
+        # up (repetitive) package downloads
+        out = open( os.path.join( LXCPATH, m, "rootfs/etc/apt/apt.conf.d/02proxy"), "w")
+        print >>out, """Acquire::http { Proxy "http://192.168.100.1:3142"; };"""
+        out.close()
+
+    # Configure proper Poweroff
+    #
+    powerofflink = os.path.join( LXCPATH, m, "rootfs/etc/systemd/system/sigpwr.target")
+    try:
+      os.unlink( powerofflink )
+    except OSError:
+      pass
+    os.symlink( "/lib/systemd/system/poweroff.target", powerofflink )
+    os.system( "lxc-start -n %s -d" % m)
+
+
+# install apt-cacher-ng for containers to use for installations to massively
+# speed up downloads.
+use_apt_cacher_ng = True #os.environ.has_key("USE_APT_CACHER_NG")
+if use_apt_cacher_ng:
+    os.system("apt-get -y install apt-cacher-ng")
+
+# set locales
+os.environ["LANG"]="en_US.UTF-8"
+setupLxcMachines(machines, use_apt_cacher_ng)

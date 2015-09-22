@@ -1,0 +1,11 @@
+---
+inst::roles:
+  - inst::role::hadoop::zookeeper::client
+  - inst::role::hadoop::zookeeper::server
+  - inst::role::hadoop::node::journalnode
+  - inst::role::ntp::client
+  - inst::role::ldap::client
+  - inst::role::kerberos::client
+  - inst::role::sssd
+
+hadoop_zookeeper::server::myid: "2"

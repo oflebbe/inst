@@ -1,0 +1,4 @@
+---
+classes:
+  - inst::profile::kerberos::server::slave
+  - kerberos::kdc::slave

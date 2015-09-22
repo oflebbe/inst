@@ -1,0 +1,26 @@
+---
+classes:
+  - inst::profile::management
+  - trocla::yaml
+
+
+system::files:
+  /etc/rsyslog.d/puppet-master.conf:
+    ensure: 'present'
+    owner: 'root'
+    group: 'root'
+    mode: '0644'
+    notify: Service[rsyslog]
+    content: |
+      # Warnings about undefined variables in hiera lookups are expected. We know
+      # what we're doing.
+      # old style:
+      #:msg, regex, "Could not look up qualified variable 'role::.*::hierapath'; class inst::role::.* has not been evaluated" ~
+      if $programname == "puppet-master" and re_match($msg, "Could not look up qualified variable 'inst::role::.*::hierapath'; class inst::role::.* has not been evaluated") then ~
+
+system::augeas:
+  /etc/puppet/fileserver.conf:
+    context: '/files/etc/puppet/fileserver.conf'
+    changes:
+      - 'set files/allow "*"'
+

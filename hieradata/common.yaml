@@ -1,0 +1,409 @@
+---
+classes:
+  - inst::profile
+  - system
+  - timezone
+  - ssh
+  - pam::mkhomedir
+
+system::use_stages: false
+
+system::packages:
+  apt-utils: {}
+  vim: {}
+  less: {}
+  wget: {}
+  curl: {}
+  python: {}
+  python-lxml: {}
+  rsync: {}
+  rsyslog: {}
+  screen: {}
+  strace: {}
+  haveged: {}
+
+# ensure rsyslog service is present and running. Notified by system::files when
+# custom config snippets are installed.
+system::services:
+  rsyslog: {}
+
+system::hosts:
+  'node1.bigtop.org':
+    ensure: 'present'
+    ip: '192.168.100.21'
+    host_aliases: [ 'node1', 'namenode1', 'management', 'masterldap']
+  'node2.bigtop.org':
+    ensure: 'present'
+    ip: '192.168.100.22'
+    host_aliases: [ 'node2', 'namenode2', 'hivenode', 'slaveldap']
+  'node3.bigtop.org':
+    ensure: 'present'
+    ip: '192.168.100.23'
+    host_aliases: [ 'node3' ]
+
+# throw away all existing sources.list entries
+apt::purge_sources_list: true
+apt::purge_sources_list_d: true
+
+# add sources.list.d entries for main distribution
+apt::sources:
+  'debian-%{inst::distcodename}':
+    location: 'http://httpredir.debian.org/debian'
+    release: '%{inst::distcodename}'
+    repos:  'main non-free'
+    include_src: false
+  'debian-%{inst::distcodename}-security':
+    location: 'http://security.debian.org'
+    release: '%{inst::distcodename}/updates'
+    repos: 'main'
+    include_src: false
+  'debian-%{inst::distcodename}-updates':
+    location: 'http://httpredir.debian.org/debian/'
+    release: '%{inst::distcodename}-updates'
+    repos: 'main'
+    include_src: false
+  'debian-%{inst::distcodename}-backports':
+    location: 'http://httpredir.debian.org/debian/'
+    release: '%{inst::distcodename}-backports'
+    repos: 'main'
+    include_src: false
+  'prot':
+    location: 'http://www.oflebbe.de/prot'
+    release: 'prot'
+    repos: 'contrib'
+    key: 'FEB8A58671866EE5D77BC597DF19AEEC730A0987'
+    # imported by prot/osfamily.pp:Debian because of dependency cycle with
+    # system::files
+    require: 'File[/etc/apt/apt-repo-keys.asc]'
+    key_source: '/etc/apt/apt-repo-keys.asc'
+    pin: '1000'
+
+ntp::servers: []
+
+ssh::server_options:
+  'KexAlgorithms': 'curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1'
+  'PermitRootLogin': 'without-password'
+
+inst::cacert: '/etc/puppet/ca.pem'
+
+inst::profile::sssd::sslkey:  '/etc/sssd/sssdkey.pem'
+inst::profile::sssd::sslcert: '/etc/sssd/sssdcert.pem'
+
+sssd::domains:
+  - 'bigtop.org'
+sssd::domains:
+  'bigtop.org':
+    'id_provider': 'ldap'
+    'access_provider': 'ldap'
+    'auth_provider': 'krb5'
+    'ldap_uri':
+      - 'ldaps://node1.bigtop.org'
+      - 'ldaps://node2.bigtop.org'
+    'ldap_search_base': 'dc=bigtop,dc=org'
+    'ldap_schema': 'rfc2307bis'
+    'ldap_tls_reqcert': 'demand'
+    'ldap_tls_cacert': "%{hiera('inst::cacert')}"
+#    'ldap_tls_cert': "%{hiera('inst::profile::sssd::sslcert')}"
+#    'ldap_tls_key': "%{hiera('inst::profile::sssd::sslkey')}"
+    'enumerate': 'true'
+#    'ldap_sasl_mech': 'EXTERNAL'
+    'ldap_sasl_mech': 'GSSAPI'
+    'krb5_server':
+      - 'node1.bigtop.org'
+      - 'node2.bigtop.org'
+    'krb5_realm': "%{hiera('kerberos::realm')}"
+    'ldap_access_filter': '(memberOf=cn=linuxlogin,ou=groups,dc=bigtop,dc=org)'
+sssd::services:
+  - 'pam'
+  - 'nss'
+
+saslauthd::mechanisms: 'kerberos5'
+
+ldap::client::uri: 'ldaps://node1.bigtop.org ldaps://node2.bigtop.org'
+ldap::client::base: 'dc=bigtop,dc=org'
+ldap::client::ssl: true
+ldap::client::ssl_cacert: "%{hiera('inst::cacert')}"
+ldap::client::ssl_ciphersuite: 'NORMAL:-VERS-SSL3.0:-CIPHER-ALL:-SHA1:-MD5:+SHA1:+AES-256-GCM:-RSA'
+
+ldap::server::suffix: 'dc=bigtop,dc=org'
+ldap::server::backend: 'mdb'
+ldap::server::bind_v2: false
+ldap::server::directory: '/var/lib/ldap.inst'
+ldap::server::purge_dynconfig_directory: true
+ldap::server::ssl: true
+ldap::server::ssl_cacert: "%{hiera('inst::cacert')}"
+ldap::server::ssl_cert: "/etc/ldap/slapdcert.pem"
+ldap::server::ssl_key: "/etc/ldap/slapdkey.pem"
+ldap::server::ssl_ciphersuite: 'NORMAL:-VERS-SSL3.0:-CIPHER-ALL:-SHA1:-MD5:+SHA1:+AES-256-GCM:%SERVER_PRECEDENCE:-RSA'
+ldap::server::ssl_verify_client: "allow"
+ldap::server::schemas:
+  - 'core'
+  - 'cosine'
+  - 'inetorgperson'
+ldap::server::extra_schemas:
+  - 'rfc2307bis'
+  - 'groupofentries'
+ldap::server::authz_regexp:
+  - '"uid=(.*),cn=gssapi,cn=auth" ldap:///dc=bigtop,dc=org??sub?(uid=$1)'
+ldap::server::schema_source_directory: "puppet:///modules/inst/ldap/schema"
+# ACLs, default:
+#ldap::server::access:
+#  # to what
+#  - 'attrs=userPassword,shadowLastChange':
+#    # by who: access
+#    - 'self': '@@writeable_on_sync_provider_only@@'
+#    - 'anonymous': 'auth'
+#  - 'attrs=objectClass,cn,uid,uidNumber,gidNumber,gecos,homeDirectory,loginShell,member,memberUid,entry':
+#    - '*': 'read'
+ldap::server::disable_safe_default_acls: true
+ldap::server::access:
+  # access to root dse. admins need write access for initial creatin of root object
+  - 'dn.exact=""':
+    - 'dn.regex="^uid=.*/admin,cn=gssapi,cn=auth$" ssf=56': '@@writeable_on_sync_provider_only@@'
+    # read access for syncrepl consumer (node2):
+    - 'dn.exact="cn=node2.bigtop.org"': 'read'
+    - '*': 'read'
+  # access to subschema for schema discovery
+  - 'dn.exact="cn=Subschema"':
+    - '*': 'read'
+  - 'attrs=userPassword,shadowLastChange':
+    # by who: access
+    - 'dn.regex="^uid=.*/admin,cn=gssapi,cn=auth$" ssf=56': '@@writeable_on_sync_provider_only@@'
+    # read access for syncrepl consumer (node2):
+    - 'dn.exact="cn=node2.bigtop.org"': 'read'
+    - 'self ssf=128': '@@writeable_on_sync_provider_only@@'
+    - 'anonymous ssf=128': 'auth'
+    - '*': 'none'
+  # access to posix attributes and other common user/group attributes
+  - 'attrs=objectClass,cn,uid,uidNumber,gidNumber,gecos,homeDirectory,loginShell,member,memberUid,memberOf,entry':
+    - 'dn.regex="^uid=.*/admin,cn=gssapi,cn=auth$" ssf=56': '@@writeable_on_sync_provider_only@@'
+    # read access for syncrepl consumer (node2):
+    - 'dn.exact="cn=node2.bigtop.org"': 'read'
+    - 'users ssf=56': 'read'
+    - '*': 'none'
+  - '*':
+    - 'dn.regex="^uid=.*/admin,cn=gssapi,cn=auth$" ssf=56': '@@writeable_on_sync_provider_only@@'
+    # read access for syncrepl consumer (node2):
+    - 'dn.exact="cn=node2.bigtop.org"': 'read'
+    - '*': 'none'
+
+ldap::server::kerberos: true
+ldap::server::krb5_keytab: "/etc/slapd.keytab"
+ldap::server::memberof_group_oc: 'groupOfEntries'
+ldap::server::refint_attributes: 'member'
+ldap::server::rootdn: 'cn=admin,dc=bigtop,dc=org'
+
+ldap::server::sync_type: 'refreshAndPersist'
+ldap::server::sync_interval: '00:00:00:10'
+ldap::server::sync_retry: '10 30 300 +'
+ldap::server::sync_bindmethod: 'sasl'
+ldap::server::sync_saslmech: 'EXTERNAL'
+
+# profile parameters, mostly derived from other parameters
+inst::profile::ldap::server::slapdcert: "%{hiera('ldap::server::ssl_cert')}"
+inst::profile::ldap::server::slapdkey: "%{hiera('ldap::server::ssl_key')}"
+inst::profile::ldap::server::host_ticket_cache_ccname: "%{hiera('kerberos::host_ticket_cache_ccname')}"
+inst::profile::ldap::server::krb5_keytab: "%{hiera('ldap::server::krb5_keytab')}"
+
+inst::profile::kerberos::pkinit_cacert: "%{hiera('inst::cacert')}"
+inst::profile::kerberos::server::pkinit_kdccert: '/etc/krb5kdc/kdccert.pem'
+inst::profile::kerberos::server::pkinit_kdckey: '/etc/krb5kdc/kdckey.pem'
+
+inst::profile::sssd::host_ticket_cache_ccname: "%{hiera('kerberos::host_ticket_cache_ccname')}"
+
+inst::profile::hadoop::node::journalnode::zk: "%{hiera('hadoop::zk')}"
+
+inst::profile::hadoop::node::namenode::shared_edits_dir: "%{hiera('hadoop::common_hdfs::shared_edits_dir')}"
+
+inst::profile::hadoop::node::initnode::hadoop_security_authentication: "%{hiera('hadoop::hadoop_security_authentication')}"
+
+inst::profile::hadoop::node::hivenode::host_ticket_cache_ccname: "%{hiera('kerberos::host_ticket_cache_ccname')}"
+inst::profile::hadoop::node::hivenode::hadoop_security_authentication: "%{hiera('hadoop::hadoop_security_authentication')}"
+inst::profile::hadoop::node::hivenode::hive_port: "%{hiera('hadoop_hive::port')}"
+
+inst::profile::hadoop::frontend::huecert: '/etc/hue/conf/huecert.pem'
+inst::profile::hadoop::frontend::huekey: '/etc/hue/conf/huekey.pem'
+
+inst::profile::hadoop::zookeeper::initnode::hadoop_security_authentication: "%{hiera('hadoop::hadoop_security_authentication')}"
+inst::profile::hadoop::zookeeper::initnode::aclnodes:
+  - '/'
+  - '/zookeeper'
+  - '/zookeeper/quota'
+  - '/hive_zookeeper_namespace'
+
+kerberos::kdcs:
+  - 'node1.bigtop.org'
+  - 'node2.bigtop.org'
+kerberos::admin_server: 'node1.bigtop.org'
+kerberos::master_kdc: 'node1.bigtop.org'
+
+kerberos::realm: 'BIGTOP.ORG'
+kerberos::forwardable: false
+kerberos::proxiable: false
+kerberos::pkinit_anchors: "%{hiera('inst::profile::kerberos::pkinit_cacert')}"
+# default but needed here for our roles that use the cache
+kerberos::host_ticket_cache_ccname: "/var/lib/puppet/krb5cc.puppet"
+
+kerberos::kdc_database_password_file: '/etc/krb5kdc/pw'
+kerberos::kdc_master_key_type: 'aes256-cts'
+kerberos::kdc_kdc_ports: '88'
+kerberos::kdc_max_life: '10h 0m 0s'
+kerberos::kdc_max_renewable_life: '2d 0h 0m 0s'
+kerberos::kdc_supported_enctypes:
+  - 'aes256-cts:normal'
+kerberos::kdc_pkinit_identity: "%{hiera('inst::profile::kerberos::server::pkinit_kdccert')},%{hiera('inst::profile::kerberos::server::pkinit_kdckey')}"
+kerberos::kdc_logfile: "SYSLOG:INFO:AUTH"
+
+kerberos::kadmind_logfile: "SYSLOG:INFO:AUTH"
+kerberos::kadmind_acls:
+  "*/admin@BIGTOP.ORG": '*'
+  "hue/*@BIGTOP.ORG": 'i *@BIGTOP.ORG'
+  "node1.bigtop.org": "aci */node1.bigtop.org"
+  "node2.bigtop.org": "aci */node2.bigtop.org"
+  "node3.bigtop.org": "aci */node3.bigtop.org"
+
+# principals to create locally using kadmin.local when bootstrapping the KDC
+kerberos::principals:
+  'node1.bigtop.org': {}
+  'node2.bigtop.org': {}
+  'node3.bigtop.org': {}
+
+
+trocla::yaml::password_length: "63"
+
+hadoop_zookeeper::kerberos_realm: "%{hiera('kerberos::realm')}"
+hadoop_zookeeper::server::ensemble:
+  - "node1.bigtop.org:2888:3888"
+  - "node2.bigtop.org:2888:3888"
+  - "node3.bigtop.org:2888:3888"
+
+# zookeeper quorum
+# used in hdfs-site and yarn-site
+hadoop::zk: "node1.bigtop.org:2181,node2.bigtop.org:2181,node3.bigtop.org:2181"
+
+hadoop::hadoop_security_authentication: "kerberos"
+hadoop::kerberos_realm: "%{hiera('kerberos::realm')}"
+hadoop::generate_secrets: true
+
+hadoop::common_hdfs::hdfs_shortcut_reader: true
+
+hadoop::common_hdfs::hadoop_http_authentication_type: "%{hiera('hadoop::hadoop_security_authentication')}"
+hadoop::common_hdfs::ha: "auto"
+hadoop::common_hdfs::nameservice_id: "ha-cluster"
+hadoop::common_hdfs::hadoop_namenode_host:
+  - "node1.bigtop.org"
+  - "node2.bigtop.org"
+
+hadoop::common_hdfs::journalnode_edits_dir: "/grid/hadoop/jn"
+# default but needed by our namenode profile to check availability
+hadoop::common_hdfs::journalnode_port: "8485"
+
+hadoop::common_hdfs::shared_edits_dir: "qjournal://node1.bigtop.org:8485;node2.bigtop.org:8485;node3.bigtop.org:8485/ha-cluster"
+# We use httpfs because we need ha failover in hue
+hadoop::common_hdfs::hdfs_webhdfs_enabled: "false"
+# equally distribute data to disks on datanodes
+hadoop::common_hdfs::hdfs_datanode_fsdataset_volume_choosing_policy: "org.apache.hadoop.hdfs.server.datanode.fsdataset.AvailableSpaceVolumeChoosingPolicy"
+hadoop::common_hdfs::hdfs_replication: "2"
+hadoop::proxyusers:
+  'hcat':
+    'groups': '*'
+    'hosts': '*'
+  'httpfs':
+    'groups': '*'
+    'hosts': '*'
+  'hue':
+    'groups': '*'
+    'hosts': '*'
+  'oozie':
+    'groups': '*'
+    'hosts': '*'
+  'hive':
+    'groups': '*'
+    'hosts': '*'
+  'mapred':
+    'groups': '*'
+    'hosts': '*'
+
+
+hadoop::common_hdfs::hdfs_data_dirs:
+  - "/grid/hadoop/hdfs/d1"
+  - "/grid/hadoop/hdfs/d2"
+hadoop::common_hdfs::namenode_data_dirs:
+  - "/grid/hadoop/hdfs/nn"
+
+hadoop::common_yarn::hadoop_rm_host:
+  - "node1.bigtop.org"
+  - "node2.bigtop.org"
+hadoop::common_yarn::hadoop_rm_port: "8032"
+hadoop::common_yarn::hadoop_ps_host: "node1.bigtop.org"
+hadoop::common_yarn::yarn_data_dirs:
+  - "/grid/hadoop/yarn"
+hadoop::common_yarn::yarn_nodemanager_resource_memory_mb: "3048"
+hadoop::common_yarn::yarn_scheduler_minimum_allocation_mb: "1024"
+hadoop::common_yarn::yarn_scheduler_maximum_allocation_mb: "2048"
+hadoop::common_yarn::yarn_resourcemanager_scheduler_class: "org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler"
+hadoop::common_yarn::yarn_resourcemanager_ha_enabled: "true"
+hadoop::common_yarn::yarn_resourcemanager_cluster_id: "ha-cluster"
+hadoop::common_yarn::container_executor_min_user_id: "100"
+
+hadoop::common_mapred_app::mapreduce_task_io_sort_mb: "100"
+hadoop::common_mapred_app::mapreduce_task_io_sort_factor: "10"
+hadoop::common_mapred_app::mapreduce_tasktracker_map_tasks_maximum: "3"
+hadoop::common_mapred_app::mapreduce_tasktracker_reduce_tasks_maximum: "3"
+hadoop::common_mapred_app::mapreduce_tasktracker_http_threads: "40"
+
+hadoop::common_mapred_app::mapreduce_framework_name: "yarn-tez"
+hadoop::common::tez_conf_dir: "/etc/tez/conf"
+hadoop::common::tez_jars: "/usr/lib/tez/"
+hadoop::common::hadoop_classpath: "${TEZ_CONF_DIR}:${TEZ_JARS}/*:${TEZ_JARS}/lib/*:${HADOOP_CLASSPATH}"
+
+# default but needed by our hivenode profile to check availability
+hadoop_hive::port: "10000"
+hadoop_hive::kerberos_realm: "%{hiera('kerberos::realm')}"
+hadoop_hive::engine: "tez"
+hadoop_hive::enable_doas: "false"
+hadoop_hive::enable_sql_std_authorization: "true"
+hadoop_hive::hive_zookeeper_quorum: "node1.bigtop.org,node2.bigtop.org,node3.bigtop.org"
+
+hue::server::kerberos_realm: "%{hiera('kerberos::realm')}"
+hue::server::hue_timezone: "Europe/Berlin"
+hue::server::ldap_url: 'ldaps://node1.bigtop.org'
+hue::server::user_name_attr: "uid"
+hue::server::user_filter: "(&(objectclass=posixAccount)(memberOf=cn=huelogin,ou=groups,dc=bigtop,dc=org))"
+
+hue::server::group_member_attr: "member"
+hue::server::group_filter: "objectclass=groupOfEntries"
+hue::server::ldap_cert: "/etc/puppet/ca.pem"
+hue::server::use_start_tls: "false"
+
+hue::server::rm_host:
+   - "node1.bigtop.org"
+   - "node2.bigtop.org"
+
+hue::server::hive_host: "node2.bigtop.org"
+hue::server::hive_port: "10000"
+
+hue::server::hue_apps:
+   - "beeswax"
+   - "rdbms"
+
+hue::server::auth_backend: "desktop.auth.backend.LdapBackend"
+hue::server::base_dn: "DC=bigtop,DC=org"
+
+hue::server::bind_dn: "cn=hue_bind,ou=people,dc=bigtop,dc=org"
+hue::server::bind_password: "Geheim123"
+
+hue::server::rm_port: "%{hiera('hadoop::common_yarn::hadoop_rm_port')}"
+hue::server::rm_api_port: "8088"
+hue::server::rm_logical_name: "%{hiera('hadoop::common_yarn::yarn_resourcemanager_cluster_id')}"
+hue::server::rm_proxy_url: "http://node1.bigtop.org:8088"
+hue::server::history_server_url: "http://node1.bigtop.org:19888"
+hue::server::webhdfs_url: "http://node2.bigtop.org:14000/webhdfs/v1/"
+hue::server::oozie_url: "http://node2.bigtop.org:11000/oozie"
+
+hue::server::default_fs: "hdfs://%{hiera('hadoop::common_hdfs::nameservice_id')}"
+hue::server::huecert: "%{hiera('inst::profile::hadoop::frontend::huecert')}"
+hue::server::huekey: "%{hiera('inst::profile::hadoop::frontend::huekey')}"
+
+
+hadoop-oozie::server::kerberos_realm: "%{hiera('kerberos::realm')}"

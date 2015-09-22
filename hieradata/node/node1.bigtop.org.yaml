@@ -1,0 +1,23 @@
+---
+inst::roles:
+  - inst::role::management
+  - inst::role::hadoop::zookeeper::client
+  - inst::role::hadoop::zookeeper::server
+  - inst::role::hadoop::zookeeper::initnode
+  - inst::role::hadoop::node::journalnode
+  - inst::role::hadoop::node::namenode
+  - inst::role::hadoop::node::datanode
+  - inst::role::hadoop::node::initnode
+  - inst::role::hadoop::node::resourcemanagernode
+  - inst::role::ntp::server
+  - inst::role::ldap::server::master
+  - inst::role::ldap::client
+  - inst::role::kerberos::client
+  - inst::role::kerberos::server::master
+  - inst::role::sssd
+  - inst::role::saslauthd
+
+kerberos::kdc_slaves:
+  - 'node2.bigtop.org'
+
+hadoop_zookeeper::server::myid: "0"

@@ -1,0 +1,7 @@
+---
+classes:
+  - inst::profile::ldap::server::slave
+
+ldap::server::sync_provider: 'ldaps://node1.bigtop.org'
+ldap::server::modules: [ 'memberof', 'refint' ]
+ldap::server::overlays: [ 'memberof', 'refint' ]

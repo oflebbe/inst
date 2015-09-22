@@ -1,0 +1,2 @@
+include inst
+hiera_include("classes")

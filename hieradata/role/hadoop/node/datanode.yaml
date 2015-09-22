@@ -1,0 +1,13 @@
+---
+classes:
+  - inst::profile::hadoop::node::datanode
+  - hadoop::datanode
+  - hadoop::nodemanager
+  ### If mapred is not installed, yarn can fail.
+  ### So, when we install yarn, we also need mapred for now.
+  ### This dependency should be cleaned up eventually.
+  - hadoop::mapred-app
+
+system::files:
+  '/grid/hadoop/hdfs':
+    ensure: 'directory'

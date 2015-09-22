@@ -1,0 +1,4 @@
+---
+classes:
+  - inst::profile::hadoop::zookeeper::client
+  - hadoop_zookeeper::client

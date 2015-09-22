@@ -1,0 +1,37 @@
+[libdefaults]
+	default_realm = <%= @realm %>
+
+# The following krb5.conf variables are only for MIT Kerberos.
+	krb4_config = /etc/krb.conf
+	krb4_realms = /etc/krb.realms
+	kdc_timesync = 1
+	ccache_type = 4
+	forwardable = <%= @forwardable %>
+	proxiable = <%= @proxiable %>
+<% if @pkinit_anchors -%>
+	pkinit_anchors = <%= @pkinit_anchors %>
+<% end -%>
+
+        # set to true for OpenAFS to work
+        allow_weak_crypto = <%= @allow_weak_crypto %>
+
+# The following libdefaults parameters are only for Heimdal Kerberos.
+	fcc-mit-ticketflags = true
+
+[realms]
+        <%= @realm %> = {
+<% @kdcs.each do |val| -%>
+                kdc = <%= val %>
+<% end -%>
+<% if @master_kdc -%>
+                master_kdc = <%= @master_kdc %>
+<% end -%>
+<% if @admin_server -%>
+                admin_server = <%= @admin_server %>
+<% end -%>
+        }
+
+[domain_realm]
+<% domain_realm_list.each_pair do |key, val| -%>
+        <%= key %> = <%= val %>
+<% end -%>

@@ -1,0 +1,6 @@
+---
+classes:
+  - inst::profile::hadoop::frontend
+  - hadoop::httpfs
+  - hadoop-oozie::server
+  - hue::server

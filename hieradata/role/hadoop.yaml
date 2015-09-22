@@ -1,0 +1,20 @@
+---
+classes:
+  - inst::profile::hadoop
+
+system::packages:
+  openjdk-7-jre-headless:
+    # alias used by bigtop classes
+    alias: "jdk"
+
+apt::sources:
+  'bigtop':
+     location: 'http://bigtop.s3.amazonaws.com/releases/1.0.0/debian/8/x86_64'
+     release: 'bigtop'
+     repos: 'contrib'
+     # imported by prot/osfamily.pp:Debian because of dependency cycle with
+     # system::files
+     pin: '1000'
+     key: 'FA08B173'
+     require: 'File[/etc/apt/bigtop-repo-key.asc]'
+     key_source: '/etc/apt/bigtop-repo-key.asc'
