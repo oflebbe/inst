@@ -22,6 +22,7 @@ master)
 	               puppetlabs-inifile \
 	               puppetlabs-firewall saz-ssh \
 	               rgevaert-saslauthd \
+                       datacentred-ldap \
 	               jpl-pam ; do
              puppet module install $i || die
         done
